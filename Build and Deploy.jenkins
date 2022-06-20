@@ -1,0 +1,66 @@
+pipeline {
+    agent any 
+    environment {
+        registry = "743836443296.dkr.ecr.us-east-1.amazonaws.com/jenkins-pipleline-build"
+	  }
+    stages {
+        stage('Checkout') {
+            steps {
+               git 'git clone git@bitbucket.org:enlightedinc/sw_rtls_apps.git'
+               
+            }
+            
+        }
+	stage("verify tooling") {
+      		steps {
+       		 sh '''
+        	  docker version
+         	  docker info
+         	  curl --version
+                  jq --version
+                  '''
+      }
+    }
+        stage('Build') {
+            steps{
+                script {
+                dockerImage = docker.build registry
+                    }
+                }
+        }    
+        stage('Pushing DOCKER Img to ECR') {
+             steps{  
+                script {
+                     sh 'aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 743836443296.dkr.ecr.us-east-1.amazonaws.com'
+                     sh 'docker push 743836443296.dkr.ecr.us-east-1.amazonaws.com/jenkins-pipleline-build:latest'
+                        }
+                       
+                 }
+        
+          }
+          stage('stop previous containers') {
+                steps {
+                 sh 'docker ps -f name=mypythonContainer -q | xargs --no-run-if-empty docker container stop'
+                 sh 'docker container ls -a -fname=mypythonContainer -q | xargs -r docker container rm'
+                }
+            }
+           stage('Docker Run') {
+            steps{
+             script {
+              sh 'docker run -d -p 8050:5050 --rm --name mypythonContainer 743836443296.dkr.ecr.us-east-1.amazonaws.com/jenkins-pipleline-build:latest'
+               } 
+            }
+        }
+      	 stage('Start container') {
+      steps {
+        sh 'docker compose up -d --no-color --wait'
+        sh 'docker compose ps'
+      }
+    }
+      stage('Run tests against the container') {
+      steps {
+        sh 'curl http://107.22.117.3:8050/param?query=demo | jq'
+      }
+    }
+    }
+}

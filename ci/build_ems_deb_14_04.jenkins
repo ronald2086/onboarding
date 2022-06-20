@@ -1,0 +1,138 @@
+def code
+def dummySubnet = "10.64.xx.xx/xx"
+
+pipeline {
+  agent {
+    kubernetes {
+      slaveConnectTimeout 180
+      yaml '''
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          namespace: cicd
+        spec:
+          containers:
+            - name: jnlp
+              image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/jenkins-jnlp:latest
+            - name: checkov
+              image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/docker-checkov:latest
+              imagePullPolicy: Always
+              command:
+                - cat
+              resources:
+                requests:
+                  cpu: "0.5"
+                  memory: "0.5Gi"
+              tty: true
+            - name: docker-manage-ubuntu14-04
+              image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/docker-manage-ubuntu14-04:0.1.5
+              imagePullPolicy: Always
+              command:
+                - cat
+              resources:
+                requests:
+                  cpu: "1"
+              tty: true
+          securityContext:
+            fsGroup: 1000
+          serviceAccount: "jenkins-sa"
+      '''
+    }
+  }
+  options {
+    timeout(time: 45, unit: 'MINUTES')   // timeout on whole pipeline job
+    buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '10'))
+  }
+  parameters {
+    string(name: 'GIT_REPO', defaultValue: 'enlightedinc/gems', description: 'Git Repo')
+    string(name: 'BUILD_GIT_BRANCH', defaultValue: 'dev', description: 'OVERRIDE - Git Branch')
+    choice(name: 'BACNET_RC', choices: ['EnlightedBACnet_V4.0.0.409.zip','EnlightedBACnet_V4.0.0.394.zip','EnlightedBACnet_V4.0.0.378.zip'], description: 'BACNET Build')
+  }
+
+  stages {
+
+    stage('Parameter Check') {
+      agent none
+      steps {
+        echo "Checking Parameter"
+        script {
+          if (params.BUILD_GIT_BRANCH == "") {
+            error "Parameter BUILD_GIT_BRANCH can not be empty"
+          }
+          if (params.BUILD_GIT_BRANCH == 'rel_em_4.1.3' && params.BACNET_RC != 'EnlightedBACnet_V4.0.0.394.zip') {
+            error "Parameter BACNET_RC is not valid. Please select valid BACNET version for ${params.BUILD_GIT_BRANCH}"
+          }
+          if (params.BUILD_GIT_BRANCH == 'rel_em_4.1' && params.BACNET_RC != 'EnlightedBACnet_V4.0.0.378.zip') {
+            error "Parameter BACNET_RC is not valid. Please select valid BACNET version for ${params.BUILD_GIT_BRANCH}"
+          }
+        }
+      }
+    }
+
+    stage('LoadGroovyCode') {
+      steps {
+        echo "Loading groovy script"
+        script {
+          code = load "./EM/ci/scripts/stage-source-14-04.groovy"
+          code.setEnvVars("${BUILD_NUMBER}")
+        }
+      }
+    }
+
+    stage('Checkout and Tag code') {
+      steps {
+        script {
+          code.checkoutAndTag()
+        }
+      }
+    }
+
+    stage('Checkout and add Bacnet Repo') {
+      steps {
+        script {
+          code.processBacnetProcess()
+        }
+      }
+    }
+
+    stage('Build Code'){
+      steps {
+        script {
+          code.buildCode()
+        }
+      }
+    }
+
+    stage('Run Sonar Analysis') {
+      when {
+        expression { env.DEBUG_MODE.toBoolean() == false }
+      }
+      steps {
+        echo "========Running Sonar Analysis========"
+        script {
+          CI_ERROR = 'Failed at Sonar Analysis'
+        }
+        container('docker-manage-ubuntu14-04') {
+          configFileProvider([configFile(fileId: 'maven-settings', variable: 'MAVEN_SETTINGS_XML')]) {
+            withSonarQubeEnv(installationName: 'SonarQube') {
+              //skip the domain module from code coverage report
+              sh '''
+                cd EM
+                mvn sonar:sonar -s $MAVEN_SETTINGS_XML
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+        archiveArtifacts artifacts: 'EM/ecloud/artifacts/CA/etc/enlighted/CA/scripts/generateCAcert.sh,EM/ecloud/artifacts/CA/apache2/sites-enabled/000-default.conf,EM/ecloud/artifacts/server/tomcat/conf/server.xml,EM/debian_tomcat8/tomcat8_amd64.deb,EM/ecloud/artifacts/server/tomcat/conf/context.xml,EM/em_cloud_instance/artifacts/apache2/000-default-replica.conf,EM/debian_em_all2/*,EM/ISO_Build_Dir/*.iso,EM/google/*.tgz,EM/debian_master/*_master.deb,EM/debian_replica/*_replica.deb,EM/debian_adr2/*.deb,EM/em_cloud_instance/target/em_cloud_instance.war,EM/ecloud/target/ecloud.war,EM/em_cloud_communicator/target/em_cloud_communicator.jar,EM/debs/orchestrator/var/lib/tomcat6/Enlighted/upgradeEnlFiles/server.xml,EM/em_cloud_instance/artifacts/tomcat/webapps/ROOT/index.html,EM/ISO_Build_Dir/*', onlyIfSuccessful: true, fingerprint: true
+        script {
+            code.jUnitAndSlackReport()
+        }//script
+    }//always
+  } //post
+}

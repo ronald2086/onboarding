@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<Context>
+
+    <!-- Default set of monitored resources. If one of these changes, the    -->
+    <!-- web application will be reloaded.                                   -->
+    <WatchedResource>WEB-INF/web.xml</WatchedResource>
+    <WatchedResource>${catalina.base}/conf/web.xml</WatchedResource>
+    <Resource name="jdbc/ems"
+    auth="Container"
+    type="javax.sql.DataSource"
+	driverClassName="org.postgresql.Driver"
+	url="jdbc:postgresql://${RDS_CLUSTER_HOST}/ems?stringtype=unspecified&amp;ssl=true&amp;sslmode=verify-full&amp;sslfactory=org.postgresql.ssl.SingleCertValidatingFactory&amp;sslfactoryarg=classpath:rds-ca-2019-root.pem"
+	username="${RDS_USER}"
+	password="${RDS_PASSWORD}"
+	validationQuery="select 1"
+	removeAbandoned="true"
+	removeAbandonedTimeout="60"
+	useUnicode="true"
+	autoReconnect="true"
+	maxWait="1000"
+	maxActive="100"
+	maxIdle="30" />
+
+<Resource name="jdbc/debugems"
+    auth="Container"
+    type="javax.sql.DataSource"
+	driverClassName="org.postgresql.Driver"
+	url="jdbc:postgresql://${RDS_CLUSTER_HOST}/ems?stringtype=unspecified&amp;ssl=true&amp;sslmode=verify-full&amp;sslfactory=org.postgresql.ssl.SingleCertValidatingFactory&amp;sslfactoryarg=classpath:rds-ca-2019-root.pem"
+	username="${RDS_USER}"
+	password="${RDS_PASSWORD}"
+	validationQuery="select 1"
+	removeAbandoned="true"
+	removeAbandonedTimeout="60"
+	useUnicode="true"
+	autoReconnect="true"
+	maxWait="1000"
+	maxActive="2"
+	maxIdle="1" />
+
+</Context>

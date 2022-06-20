@@ -1,0 +1,290 @@
+def code
+def dummySubnet = "10.64.xx.xx/xx"
+
+pipeline {
+  agent {
+    kubernetes {
+      slaveConnectTimeout 180
+      yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: cicd
+spec:
+  containers:
+    - name: jnlp
+      image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/jenkins-jnlp:latest
+    - name: checkov
+      image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/docker-checkov:latest
+      imagePullPolicy: Always
+      command:
+        - cat
+      resources:
+        requests:
+          cpu: "0.5"
+          memory: "0.5Gi"
+      tty: true
+    - name: manage-jdk8-npm
+      image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/docker-jdk8:latest
+      imagePullPolicy: Always
+      command:
+        - cat
+      resources:
+        requests:
+          cpu: "1"
+      tty: true
+  securityContext:
+    fsGroup: 1000
+  serviceAccount: "jenkins-sa"
+'''
+    }
+  }
+  options {
+    timeout(time: 75, unit: 'MINUTES')   // timeout on whole pipeline job
+  }
+  /*
+  triggers {
+    pollSCM 'H/2 * * * *'
+  }
+  */
+  parameters {
+    string(name: 'GIT_REPO', defaultValue: 'enlightedinc/gems', description: 'Git Repo')
+    string(name: 'BUILD_GIT_BRANCH', defaultValue: '', description: 'OVERRIDE - Git Branch and Preprod/Prod should be master branch only')
+    choice(name: 'ENVIRONMENT', choices: ['', 'dev','preprod','prod'], description: 'OVERRIDE - Environment')
+    choice(name: 'DR', choices: ['false', 'true'], description: 'Disaster Recovery')
+    string(name: 'REGION', defaultValue: '', description: 'OVERRIDE - AWS Region')
+    choice(name: 'SKIP_DEPLOY', choices: ['false', 'true'], description: 'If true, Only builds. No deployment')
+    choice(name: 'SKIP_NEXUS_IQ_ANALYSIS', choices: ['true', 'false'], description: 'If true, build will skip NexusIQ analysis')
+    choice(name: 'SKIP_SONAR_ANALYSIS', choices: ['true', 'false'], description: 'If true, build will skip Sonar analysis')
+    choice(name: 'SKIP_CHECKOV_ANALYSIS', choices: ['false', 'true'], description: 'If true, build will skip Checkov analysis')
+    booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'If true this will skip all external calls')
+    string(name: 'TENANT_INSTANCE_NAME', defaultValue: '', description: 'Tenant/Developer name to create s3 terraform bucket, ex: saleforce7')
+    string(name: 'TENANT_RDS_SNAPSHOT_IDENTIFIER', defaultValue: '', description: 'This is an optional field. If you specify the snapshot name the RDS instance will create accordingly otherwise default will be used')
+    choice(name: 'NEW_INTANCE_DEPLOYMENT', choices: ['false', 'true'], description: 'If true, it will register manage instance certificate with site-connectivity')
+    string(name: 'SC_BUILD_NUMBER', defaultValue: '', description: 'If NEW_INTANCE_DEPLOYMENT is true then provide Site Connectivity build number that is tagged')
+
+  }
+
+  stages {
+
+    stage('Parameter Check') {
+      agent none
+      steps {
+        echo "Checking Parameter"
+        script {
+          if ( params.BUILD_GIT_BRANCH == "") {
+            error "Parameter BUILD_GIT_BRANCH can not be empty"
+          }
+          if ( params.TENANT_INSTANCE_NAME == "" ) {
+            error "Parameter TENANT_INSTANCE_NAME can not be empty"
+          }
+          if ( params.ENVIRONMENT == "" ) {
+            error "Set the ENVIRONMENT to dev or preprod or prod only"
+          }
+
+          def master_branch_environments = ["preprod", "prod"]
+          if ( master_branch_environments.contains(params.ENVIRONMENT) && params.BUILD_GIT_BRANCH != "master") {
+            error "Prod and Preprod deployment should be from master branch only"
+          }
+        }
+      }
+    }
+
+    stage('LoadGroovyCode') {
+      steps {
+        echo "Loading groovy script"
+        script {
+          code = load "${WORKSPACE}/ci/jenkins_pipeline/stage-source.groovy"
+          code.setEnvVars("${BUILD_NUMBER}")
+        }
+      }
+    }
+
+    stage('Checkout and Tag code') {
+      steps {
+        script {
+          code.checkoutAndTag()
+        }
+      }
+    }
+
+
+    stage('Scan Terraform'){
+      when {
+        expression { params.SKIP_CHECKOV_ANALYSIS != "true" && env.DEBUG_MODE.toBoolean() == false }
+      }
+      steps{
+        script {
+          code.scanTerraform()
+        }
+      }
+    }
+
+    stage('Build Code'){
+      when  {
+        expression { env.DEBUG_MODE.toBoolean() == false }
+      }
+      steps {
+        script {
+          code.buildCode()
+        }
+      }
+    }
+
+    stage('Prepare Artifacts Bundle') {
+      steps {
+        script {
+          code.prepareZipBundle()
+        }
+      }
+    }
+
+    stage('Run Sonar Analysis') {
+      when {
+        expression { env.DEBUG_MODE.toBoolean() == false  && params.SKIP_SONAR_ANALYSIS != "true"}
+      }
+      steps {
+        echo "========Running Sonar Analysis========"
+        script {
+          CI_ERROR = 'Failed at Sonar Analysis'
+        }
+        container('manage-jdk8-npm') {
+          configFileProvider([configFile(fileId: 'maven-settings', variable: 'MAVEN_SETTINGS_XML')]) {
+            withSonarQubeEnv(installationName: 'SonarQube') {
+              //skip the domain module from code coverage report
+              sh '''
+                #cd ems
+                mvn sonar:sonar -s $MAVEN_SETTINGS_XML
+              '''
+            }
+          }
+        } //container('graalvm')
+      }
+    }
+
+    /* stage('Quality Gate Check') {
+      when {
+        expression { env.DEBUG_MODE.toBoolean() == false && params.SKIP_SONAR_ANALYSIS != "true" }
+      }
+      steps {
+        echo "======== Running Quality Gate Check ========"
+        sleep(time: 30, unit: "SECONDS")
+        script {
+          CI_ERROR = "Quality Gate check for SonarQube failed"
+        }
+        container('manage-jdk8-npm') {
+          configFileProvider([configFile(fileId: 'maven-settings', variable: 'MAVEN_SETTINGS_XML')]) {
+            withSonarQubeEnv(installationName: 'SonarQube') {
+              timeout(time: 1, unit: 'HOURS') {
+              waitForQualityGate abortPipeline: true
+              }
+            }
+          }
+        } //container('graalvm')
+      }
+    } */
+
+    stage('NexusIQ Analysis'){
+      when {
+        expression { params.SKIP_NEXUS_IQ_ANALYSIS != "true" && env.DEBUG_MODE.toBoolean() == false }
+      }
+      steps{
+        script {
+          CI_ERROR = "NexusIQ Analysis Failed"
+        }
+        container('manage-jdk8-npm') {
+          configFileProvider([configFile(fileId: 'maven-settings', variable: 'MAVEN_SETTINGS_XML')]) {
+            script {
+              echo "NexusIQ Analysis Starting..."
+              def applicationPolicyEvaluation = nexusPolicyEvaluation failBuildOnNetworkError: false, iqApplication: 'sw_dsp_manage_app', iqStage: 'build', jobCredentialsId: ''
+              classifyNexusIQAnalysis(applicationPolicyEvaluation)
+            }
+          }
+        } //container('graalvm')
+
+      }
+    }
+
+    stage('Upload artifacts'){
+      when {
+        expression { env.DEBUG_MODE.toBoolean() == false }
+      }
+      steps {
+      script {
+          code.uploadArtifacts()
+        }
+      }
+    }
+
+    stage("Deploy-Manage-Infra"){
+      when {
+          expression { params.SKIP_DEPLOY != "true" && env.DEBUG_MODE.toBoolean() == false}
+      }
+      steps {
+          script {
+            CI_ERROR = "Build job failed with downstream job"
+          }
+          echo "========Run Deploy All Job========"
+          build job: 'deploy-manage', parameters: [
+	          string(name: 'GIT_REPO', value: "${GIT_REPO}"),
+	          string(name: 'BUILD_GIT_BRANCH', value: "${env.BUILD_GIT_BRANCH}"),
+	          string(name: 'ENVIRONMENT', value: "${env.ENVIRONMENT}"),
+	          string(name: 'DR', value: "${params.DR}"),
+	          string(name: 'REGION', value: "${env.REGION}"),
+	          string(name: 'MANAGE_BUILD_NUMBER', value: "${BUILD_NUMBER}"),
+	          string(name: 'TENANT_INSTANCE_NAME', value: "${params.TENANT_INSTANCE_NAME}"),
+	          string(name: 'AWS_ACCOUNT_ALIAS', value: "${env.AWS_ACCOUNT_ALIAS}"),
+	          string(name: 'TENANT_RDS_SNAPSHOT_IDENTIFIER', value: "${params.TENANT_RDS_SNAPSHOT_IDENTIFIER}"),
+	          booleanParam(name: 'DEBUG_MODE', value: "${env.DEBUG_MODE.toBoolean()}"),
+	          string(name: 'NEW_INTANCE_DEPLOYMENT', value: "${params.NEW_INTANCE_DEPLOYMENT}"),
+	          string(name: 'SC_BUILD_NUMBER', value: "${params.SC_BUILD_NUMBER}"),
+          ]
+      }
+    }
+    stage("DEBUG_Deploy-Manage-Infra") {
+      when {
+        expression { env.DEBUG_MODE.toBoolean() == true }
+      }
+      steps {
+        echo "====== SKIPPING DEPLOY JOB DEBUG_MODE ======"
+        echo "GIT_REPO: [${GIT_REPO}]"
+        echo "BUILD_GIT_BRANCH: [${env.BUILD_GIT_BRANCH}]"
+        echo "ENVIRONMENT: [${env.ENVIRONMENT}]"
+        echo "DR: [${params.DR}]"
+        echo "REGION: [${env.REGION}"
+        echo "MANAGE_BUILD_NUMBER: [${BUILD_NUMBER}]"
+        echo "AWS_ACCOUNT_ALIAS: [${env.AWS_ACCOUNT_ALIAS}]"
+        echo "DEBUG_MODE: [${env.DEBUG_MODE}]"
+        echo "TENANT_INSTANCE_NAME: [${params.TENANT_INSTANCE_NAME}]"
+        echo "TENANT_RDS_SNAPSHOT_IDENTIFIER: [${params.TENANT_RDS_SNAPSHOT_IDENTIFIER}]"
+      }
+    }
+  } //stages
+
+  post {
+    always {
+        script {
+            code.jUnitAndSlackReport()
+        }//script
+    }//always
+  } //post
+
+  
+}
+
+/*
+This function analyzes whether nexusiq identified any failures/warnings.
+If any failures/warning, then build failed and sends slack notification.
+*/
+def classifyNexusIQAnalysis(applicationPolicyEvaluation) {
+
+  echo "NexusIQ Report  : ${applicationPolicyEvaluation.applicationCompositionReportUrl}"
+  if ( applicationPolicyEvaluation.hasFailures() || applicationPolicyEvaluation.hasWarnings() ) {
+    // build must fail and should send slack alert
+    CI_ERROR = "NexusIQ Analyzer Detected Critical/Severe Voilated Components\n${applicationPolicyEvaluation.applicationCompositionReportUrl}"
+    error(CI_ERROR)
+  } else {
+    echo "NexusIQ Passed"
+  }
+
+}

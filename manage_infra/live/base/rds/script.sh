@@ -1,0 +1,1 @@
+echo { \"dateTime\":\"$(date -u +%Y-%m-%dT%H:%M:%S.%s%z -d@$(( `date +%s`- 2*60*60 )))\" }

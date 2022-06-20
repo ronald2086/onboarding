@@ -1,0 +1,130 @@
+def code
+def dummySubnet = "10.64.xx.xx/xx"
+
+pipeline{
+  agent none
+  options {
+    timeout(time: 45, unit: 'MINUTES')   // timeout on whole pipeline job
+    ansiColor('xterm')
+  }
+  parameters {
+    string(name: 'BUILD_GIT_BRANCH', defaultValue: 'develop', description: 'Git Branch and Preprod/Prod should be master branch only')
+    string(name: 'ENVIRONMENT', defaultValue: '', description: 'Environment   like dev, pg (for playground)')
+    string(name: 'REGION', defaultValue: '', description: 'AWS Region')
+    choice(name: 'DR', choices: ['false', 'true'], description: 'Disaster Recovery')
+    string(name: 'MANAGE_BUILD_NUMBER', defaultValue: '', description: 'Build number that is tagged')
+    string(name: 'AWS_ACCOUNT_ALIAS', defaultValue: '', description: 'AWS Account for Deployment')
+    string(name: 'TENANT_INSTANCE_NAME', defaultValue: '', description: 'Tenant/Developer name to create s3 terraform bucket, ex: saleforce7')
+    booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'If true this will skip all external calls')
+  }
+
+  stages {
+    stage('Parameter Check if Playground') {
+      agent none
+      steps {
+        echo "Checking Parameter"
+        script {
+          if ( params.BUILD_GIT_BRANCH == "") {
+            error "Parameter BUILD_GIT_BRANCH can not be empty"
+          }
+          if ( params.TENANT_INSTANCE_NAME == "" ) {
+            error "Parameter TENANT_INSTANCE_NAME can not be empty"
+          }
+
+          def master_branch_environments = ["preprod", "prod"]
+          if ( master_branch_environments.contains(params.ENVIRONMENT) && params.BUILD_GIT_BRANCH != "master") {
+            error "Prod and Preprod deployment should be from master branch only"
+          }
+        }
+      }
+    }
+
+    stage('Prompt Confirmation'){
+      agent none
+      
+      steps {
+        script {
+          input(message: 'Confirmation to destroy?',
+              ok: 'Yes', 
+              parameters: [booleanParam(defaultValue: true, description: "Do you really want to destroy all resources in ${env.ENVIRONMENT} ?",name: 'Yes?')]
+          )
+        }
+        echo "Proceeding to destroy the infra."
+      }
+      options{
+        timeout(time: 5, unit: 'MINUTES')
+        ansiColor('xterm')
+      }
+    }
+
+    stage('Proceed to destroy') {
+      agent {
+        kubernetes {
+          slaveConnectTimeout 180
+          yaml '''
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            namespace: cicd
+          spec:
+            containers:
+              - name: jnlp
+                image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/jenkins-jnlp:latest
+              - name: manage-jdk8-npm
+                image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/docker-jdk8:latest
+                imagePullPolicy: Always
+                command:
+                  - cat
+                resources:
+                  requests:
+                    cpu: "1"
+                tty: true
+            securityContext:
+              fsGroup: 1000
+            serviceAccount: "jenkins-sa"
+          '''
+        }
+      }
+
+      stages {
+
+        stage('LoadGroovyCode') {
+          steps {
+            echo "Loading groovy script"
+            script {
+              code = load "${WORKSPACE}/ci/jenkins_pipeline/stage-source.groovy"
+              code.setEnvVars("${params.MANAGE_BUILD_NUMBER}")
+            }
+          }
+        }
+
+        stage('Get From Nexus'){
+          steps{
+            script {
+              code.getFromNexus()
+            }
+          }
+        }
+
+        stage('Setup Tools'){
+          steps{
+            script {
+                code.setupTools()
+            }
+          }
+        }
+
+        stage('Destroy Manage Service Infrastructure'){
+          steps {
+            script {
+              code.destroy()
+            }
+          }
+        }
+
+      } // innerstages
+    }
+
+  } // outermost stages
+}
+

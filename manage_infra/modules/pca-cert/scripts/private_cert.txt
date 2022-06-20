@@ -1,0 +1,5 @@
+#place holder for cert file. data file needs be present for plan phase to work after deployment.
+#with this approach every time we run a build we are updating a cert even if it exists. Only way (known) to stop this is to move logic to script.
+# apart from reloading same certificate on deployment there is no other side effect of this approach. With support of temp files in terraform we might be able to
+# do it in better way.
+#https://github.com/hashicorp/terraform/issues/21308

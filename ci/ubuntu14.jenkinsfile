@@ -1,0 +1,1 @@
+pipelineBuildDocker([name:'docker-manage-ubuntu14-04',file: './ci/ubuntu18.dockerfile', tag: 'dev', versionStart: '0.1.' ])

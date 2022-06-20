@@ -1,0 +1,136 @@
+####################################################################
+# general
+####################################################################
+#disable gpg authentication
+d-i debian-installer/allow_unauthenticated boolean true
+
+####################################################################
+# localizations
+####################################################################
+### Keyboard selection ###
+d-i keyboard-configuration/layoutcode string us
+d-i keyboard-configuration/variantcode string
+
+### Locale ###
+d-i debian-installer/locale string en_US
+
+####################################################################
+# Timezone
+####################################################################
+
+d-i time/zone string America/New_York
+d-i time/zone select America/New_York
+d-i clock-setup/utc boolean true
+d-i clock-setup/ntp boolean false
+d-i console-setup/ask_detect boolean false
+d-i console-setup/layoutcode string us
+d-i localechooser/supported-locales multiselect nl_NL, nl_BE, fr_BE
+
+### OEM-Config
+d-i oem-config/enable boolean true
+d-i oem-config/remove boolean true
+d-i oem-config/remove_extras boolean false
+d-i oem-config/install-language-support boolean true
+d-i ubiquity/only-show-installable-languages boolean true
+
+####################################################################
+# networking
+####################################################################
+# Network Configuration
+#d-i netcfg/enable boolean false
+d-i netcfg/choose_interface select auto
+d-i netcfg/link_wait_timeout string 10
+d-i netcfg/dhcp_timeout string 60
+d-i netcfg/dhcp_failed note
+d-i netcfg/dhcp_options select Configure network manually
+
+# Static network configuration.
+d-i netcfg/get_nameservers string 192.168.1.1
+d-i netcfg/get_ipaddress string 192.168.1.42
+d-i netcfg/get_netmask string 255.255.255.0
+d-i netcfg/get_gateway string 192.168.1.1
+d-i netcfg/confirm_static boolean true
+d-i netcfg/get_hostname string enlighted
+d-i netcfg/get_domain string enlighted.local
+
+# Disabling Netplan and going back to ifupdown old network interfaces
+d-i netcfg/do_not_use_netplan boolean true
+
+####################################################################
+# Disk Partitioning / Boot loader
+####################################################################
+### Disk Partitioning ###
+d-i preseed/run string ubuntu-rm.sh
+d-i partman-auto/disk string /dev/sda
+d-i partman-auto/init_automatically_partition select 80custom__________custom
+d-i partman-auto/method string regular
+d-i partman-auto/expert_recipe string                       \
+    root ::                                                 \
+        100 10000 1000000 ext4                                \
+            $primary{ } $bootable{ } method{ keep } 	    \
+	    use_filesystem{ } filesystem{ ext4 }            \
+            mountpoint{ / }                                 \
+        .						    \
+	64 512 300% linux-swap				    \
+            method{ swap } format{ }			    \
+       .
+d-i partman-basicfilesystems/no_mount_point boolean false
+d-i partman-auto/choose_recipe select root
+d-i partman-partitioning/confirm_write_new_label boolean true
+d-i partman/choose_partition select finish
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+d-i partman/early_command string sed -e '/dpkg -P grub-efi grub-efi-amd64-bin grub-efi-amd64 grub-efi-amd64-signed grub-efi-ia32-bin grub-efi-ia32/ s/^#*/#/' -i /usr/bin/grub-installer
+
+####################################################################
+# User Creation
+####################################################################
+d-i passwd/make-user boolean true
+d-i passwd/user-fullname string enLighted
+d-i passwd/username string enlighted
+d-i passwd/user-password password save-energy
+d-i passwd/user-password-again password save-energy
+d-i passwd/auto-login boolean false
+d-i user-setup/allow-password-weak boolean true
+d-i user-setup/encrypt-home boolean false
+
+####################################################################
+# Package selection
+####################################################################
+# Install the Ubuntu Server seed.
+d-i anna/choose_modules string apt-cdrom-setup
+d-i apt-setup/no_mirror boolean true
+d-i apt-setup/main boolean true
+d-i apt-setup/restricted boolean true
+d-i apt-setup/extras boolean true
+#tasksel tasksel/force-tasks string server
+tasksel tasksel/first multiselect Custom-Ubuntu-Server
+# Other extras packages
+d-i pkgsel/include string openssh-server openssl ntp ifupdown apache2 libapache2-mod-wsgi libapache2-mod-php openjdk-8-jdk-headless openjdk-8-jre openjdk-8-jdk software-properties-common postgresql postgresql-plperl-12 postgresql-pltcl-12 python-paramiko curl tcl isc-dhcp-server php php-pgsql python-pip python-debian python-apt python-setuptools gettext ssh-askpass bind9 zip usbmount lftp uuid
+#d-i pkgsel/include string openssh-server openssl ntp ifupdown apache2 libapache2-mod-wsgi libapache2-mod-php openjdk-8-jdk software-properties-common python-paramiko curl tcl isc-dhcp-server php php-pgsql python-pip python-debian python-apt python-setuptools gettext ssh-askpass bind9 zip usbmount lftp uuid
+d-i preseed/late_command string sh -x /cdrom/preseed/ubuntu-late_command.sh > /target/var/log/late_command.log
+
+# Policy for applying updates.
+d-i pkgsel/update-policy select none
+# Only install basic language packs. Let tasksel ask about tasks.
+d-i pkgsel/language-pack-patterns string
+# No language support packages.
+d-i pkgsel/install-language-support boolean false
+# Verbose output and no boot splash screen.
+d-i debian-installer/quiet boolean false
+d-i debian-installer/splash boolean false
+
+
+
+####################################################################
+# Package selection
+####################################################################
+d-i grub-installer/only_debian boolean true
+d-i grub-installer/with_other_os boolean true
+d-i grub-installer/bootdev string /dev/sda
+
+####################################################################
+# Finishing up
+####################################################################
+d-i finish-install/keep-consoles boolean true
+d-i finish-install/reboot_in_progress note

@@ -1,0 +1,37 @@
+module "manage-beanstalk" {
+  source                                = "../../../modules/beanstalk"
+  service                               = var.service
+  region                                = var.region
+  environment                           = var.environment
+  owner                                 = var.owner
+  default_map_server_id                 = var.default_map_server_id
+  tenant_instance_timezone              = var.tenant_instance_timezone
+  environment_stack_name                = var.environment_stack_name
+  manage_application_files_path         = var.manage_application_files_path
+  tomcat_jvm_parameters                 = var.tomcat_jvm_parameters
+  vpc_id                                = var.vpc_id
+  elb_public_subnets                    = var.elb_public_subnets
+  private_subnets                       = var.private_subnets
+  instance_type                         = var.instance_type
+  ebs_root_volume_size_in_gb            = var.ebs_root_volume_size_in_gb
+  application_port                      = var.application_port
+  domain_certificate_arn                = var.domain_certificate_arn
+  manage_database_endpoint              = var.manage_database_endpoint
+  manage_database_username              = var.manage_database_username
+  manage_database_password              = var.manage_database_password
+  manage_application_bundle             = var.manage_application_bundle
+  site_con_manage_consumer_cert_ssm     = var.site_con_manage_consumer_cert_ssm
+  site_con_manage_consumer_cert_key_ssm = var.site_con_manage_consumer_cert_key_ssm
+  enable_stream_logs                    = var.enable_stream_logs
+  logs_delete_on_terminate              = var.logs_delete_on_terminate
+  logs_retention_in_days                = var.logs_retention_in_days
+  enable_log_forwarding                 = var.enable_stream_logs && var.enable_log_forwarding
+  log_shipping_details                  = var.log_shipping_details
+  manage_uuid                           = var.manage_uuid
+  iot_core_endpoint                     = var.iot_core_endpoint
+  private_key_file                      = var.private_key_file
+  private_cert_file                     = var.private_cert_file
+  enable_port_80_http_redirect          = var.enable_port_80_http_redirect
+  feature_flag_use_republished_topics   = var.feature_flag_use_republished_topics
+  enable_alb_access_logs                = var.enable_alb_access_logs
+}

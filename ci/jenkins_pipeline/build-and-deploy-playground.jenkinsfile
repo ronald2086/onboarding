@@ -1,0 +1,199 @@
+def code
+def dummySubnet = "10.64.xx.xx/xx"
+
+pipeline {
+
+  agent none
+
+  options {
+    timeout(time: 75, unit: 'MINUTES')   // timeout on whole pipeline job
+  }
+
+  parameters {
+    string(name: 'GIT_REPO', defaultValue: 'enlightedinc/gems', description: 'Git Repo')
+    string(name: 'BUILD_GIT_BRANCH', defaultValue: '', description: 'Git Branch')
+    string(name: 'ENVIRONMENT', defaultValue: 'playground', description: 'Use Environment playground only')
+    string(name: 'REGION', defaultValue: 'us-east-1', description: 'AWS Region')
+    string(name: 'SKIP_DEPLOY', defaultValue: 'false', description: 'If true, Only builds. No deployment')
+    string(name: 'AWS_ACCOUNT_ALIAS', defaultValue: 'enl-playground', description: 'AWS Account for Deployment')
+    string(name: 'SKIP_CHECKOV_ANALYSIS', defaultValue: 'false', description: 'If true, build will skip Checkov analysis')
+    string(name: 'TENANT_INSTANCE_NAME', defaultValue: '', description: 'Tenant/Developer name to create s3 terraform bucket')
+    string(name: 'TENANT_RDS_SNAPSHOT_IDENTIFIER', defaultValue: '', description: 'This is an optional field. If you specify the snapshot name the RDS instance will create accordingly otherwise latest snapshot will be used or treated as new database')
+    string(name: 'CIDR', defaultValue: dummySubnet, description: 'CIDR range for playground env')
+    string(name: 'PRIVATE_SUBNETS', defaultValue: '["' + dummySubnet + '", "' + dummySubnet + '"]', description: 'Private subnets list for playground env')
+    string(name: 'PUBLIC_SUBNETS', defaultValue: '["' + dummySubnet + '", "' + dummySubnet + '"]', description: 'Public subnets list for playground env')
+    string(name: 'DATABASE_SUBNETS', defaultValue: '["' + dummySubnet + '", "' + dummySubnet + '"]', description: 'DB Subnets for playground env')
+  }
+
+  stages {
+    stage('Parameter Check') {
+      agent none
+      steps {
+        echo "Checking Parameter"
+        script {
+          if ( params.BUILD_GIT_BRANCH == "" || params.BUILD_GIT_BRANCH == "master" ) {
+            error "Parameter BUILD_GIT_BRANCH can not be empty or master"
+          }
+          if ( params.TENANT_INSTANCE_NAME == "" ) {
+            error "Parameter TENANT_INSTANCE_NAME can not be empty"
+          }
+          if ( params.ENVIRONMENT != "playground" ) {
+            error "Set the ENVIRONMENT to pg(playground) only"
+          }
+          if ( params.CIDR == "" || params.CIDR == dummySubnet ) {
+            error "Parameter CIDR should be set appropriately"
+          }
+          if ( params.PRIVATE_SUBNETS == "" || params.PRIVATE_SUBNETS.contains(dummySubnet) ) {
+            error "Parameter PRIVATE_SUBNETS should be set appropriately"
+          }
+          if ( params.PUBLIC_SUBNETS == "" || params.PUBLIC_SUBNETS.contains(dummySubnet) ) {
+            error "Parameter PUBLIC_SUBNETS should be set appropriately"
+          }
+          if ( params.DATABASE_SUBNETS == "" || params.DATABASE_SUBNETS.contains(dummySubnet) ) {
+            error "Parameter DATABASE_SUBNETS should be set appropriately"
+          }
+        }
+      }
+    }
+
+  stage("Proceed to build and deploy") {
+
+      agent {
+        kubernetes {
+          slaveConnectTimeout 180
+          yaml '''
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              namespace: cicd
+            spec:
+              containers:
+                - name: jnlp
+                  image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/jenkins-jnlp:latest
+                - name: checkov
+                  image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/docker-checkov:latest
+                  imagePullPolicy: Always
+                  command:
+                    - cat
+                  resources:
+                    requests:
+                      cpu: "0.5"
+                      memory: "0.5Gi"
+                  tty: true
+                - name: manage-jdk8-npm
+                  image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/docker-jdk8:latest
+                  imagePullPolicy: Always
+                  command:
+                    - cat
+                  resources:
+                    requests:
+                      cpu: "1"
+                  tty: true
+              securityContext:
+                fsGroup: 1000
+              serviceAccount: "jenkins-sa"
+          '''
+        }
+      }
+
+      stages{
+
+        stage('LoadGroovyCode') {
+
+          steps {
+            echo "Loading groovy script"
+            script {
+              code = load "${WORKSPACE}/ci/jenkins_pipeline/stage-source.groovy"
+              code.setEnvVars("${BUILD_NUMBER}")
+            }
+          }
+        }
+
+        stage('Checkout and Tag code'){
+          steps {
+            script {
+              code.checkoutAndTag()
+            }
+          }
+        }
+
+        stage('Scan Terraform'){
+          when {
+            expression { params.SKIP_CHECKOV_ANALYSIS != "true" }
+          }
+          steps{
+            script {
+              code.scanTerraform()
+            }
+          }
+        }
+
+        stage('Build Code') {
+          steps {
+            script {
+              code.buildCode()
+            }
+          }
+      }
+
+      stage('Prepare Artifacts Bundle') {
+          steps {
+            script {
+              code.prepareZipBundle()
+            }
+          }
+      }
+
+        stage('Upload artifacts'){
+          steps {
+            script {
+              code.uploadArtifacts()
+            }
+          }
+        }
+
+
+        stage('Setup Tools'){
+          steps{
+            script {
+              code.setupTools()
+            }
+          }
+        }
+
+         stage('Get From Nexus'){
+          
+          when {
+            expression { params.SKIP_DEPLOY != "true"}
+          }
+          steps {
+            script {
+              code.getFromNexus()
+            }
+          }
+        }
+
+        stage('Deploy Manage Service'){
+          when {
+            expression { params.SKIP_DEPLOY != "true"}
+          }
+          steps {
+            script {
+              code.deploy()
+            }
+          }
+        }
+      } // inner stages
+
+      post {
+        always {
+            script {
+                code.jUnitAndSlackReport()
+            }//script
+        }//always
+      } //post
+
+  }
+
+  } // Outermost stages
+}

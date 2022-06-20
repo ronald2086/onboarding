@@ -1,0 +1,166 @@
+def code
+def dummySubnet = "10.64.xx.xx/xx"
+pipeline{
+  agent {
+    kubernetes {
+      slaveConnectTimeout 180
+      yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: cicd
+spec:
+  containers:
+    - name: jnlp
+      image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/jenkins-jnlp:latest
+    - name: manage-jdk8-npm
+      image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/docker-jdk8:latest
+      imagePullPolicy: Always
+      command:
+        - cat
+      resources:
+        requests:
+          cpu: "1"
+      tty: true
+  securityContext:
+    fsGroup: 1000
+  serviceAccount: "jenkins-sa"
+'''
+    }
+  }
+  options {
+    timeout(time: 45, unit: 'MINUTES')   // timeout on whole pipeline job
+    ansiColor('xterm')
+  }
+
+  parameters {
+    string(name: 'GIT_REPO', defaultValue: 'enlightedinc/gems', description: 'Git Repo')
+    string(name: 'BUILD_GIT_BRANCH', defaultValue: '', description: 'OVERRIDE - Git Branch and Preprod/Prod should be master branch only')
+    string(name: 'ENVIRONMENT', defaultValue: '', description: 'OVERRIDE - Environment')
+    choice(name: 'DR', choices: ['false', 'true'], description: 'Disaster Recovery')
+    string(name: 'REGION', defaultValue: '', description: 'OVERRIDE - AWS Region')
+    string(name: 'MANAGE_BUILD_NUMBER', defaultValue: '', description: 'Build number that is tagged')
+    string(name: 'AWS_ACCOUNT_ALIAS', defaultValue: '', description: 'OVERRIDE - AWS Account for Deployment')
+    booleanParam(name: 'DEBUG_MODE', defaultValue: false, description: 'If true this will skip all external calls')
+    string(name: 'TENANT_INSTANCE_NAME', defaultValue: '', description: 'Tenant/Developer name to create s3 terraform bucket, ex: saleforce7')
+    string(name: 'TENANT_RDS_SNAPSHOT_IDENTIFIER', defaultValue: '', description: 'This is an optional field. If you specify the snapshot name the RDS instance will create accordingly otherwise default will be used')
+    choice(name: 'NEW_INTANCE_DEPLOYMENT', choices: ['false', 'true'], description: 'If true, it will register manage instance certificate with site-connectivity')
+    string(name: 'SC_BUILD_NUMBER', defaultValue: '', description: 'If NEW_INTANCE_DEPLOYMENT is true then provide Site-Connectivity build number that is tagged')
+   }
+
+  stages{
+
+    stage('Parameter Check') {
+      agent none
+      steps {
+        echo "Checking Parameter"
+        script {
+          if ( params.BUILD_GIT_BRANCH == "") {
+            error "Parameter BUILD_GIT_BRANCH can not be empty"
+          }
+          if ( params.MANAGE_BUILD_NUMBER == "" ) {
+            error "Parameter TENANT_INSTANCE_NAME can not be empty"
+          }
+          if ( params.TENANT_INSTANCE_NAME == "" ) {
+            error "Parameter TENANT_INSTANCE_NAME can not be empty"
+          }
+          def master_branch_environments = ["preprod", "prod"]
+          if ( master_branch_environments.contains(params.ENVIRONMENT) && params.BUILD_GIT_BRANCH != "master") {
+            error "Prod and Preprod deployment should be from master branch only"
+          }
+        }
+      }
+    }
+
+    stage('LoadGroovyCode') {
+      steps {
+        echo "Loading groovy script"
+        script {
+          code = load "${WORKSPACE}/ci/jenkins_pipeline/stage-source.groovy"
+          code.setEnvVars("${params.MANAGE_BUILD_NUMBER}")
+        }
+      }
+    }
+
+    stage('Get From Nexus'){
+      steps{
+        script {
+          code.getFromNexus()
+        }
+      }
+    }
+
+    stage('Setup Tools'){
+      steps{
+        script {
+            code.setupTools()
+        }
+      }
+    }
+
+    stage('Deploy Manage Service'){
+
+      steps {
+        script {
+          code.deploy()
+        }
+      }
+    }
+
+    stage("Register-client-certificate-pipeline-in-Site-Connectivity"){
+      when {
+          expression { params.NEW_INTANCE_DEPLOYMENT == "true" }
+      }
+      steps {
+          script {
+            CI_ERROR = "Deploy job failed with downstream job"
+
+            if ( params.BUILD_GIT_BRANCH == "master") {
+            	env.SC_GIT_BRANCH = params.BUILD_GIT_BRANCH
+            } else {
+            	env.SC_GIT_BRANCH = 'develop'
+            }
+
+            if (env.AWS_ACCOUNT_ALIAS == "enl-playground") {
+            	env.SC_AWS_ACCOUNT_ALIAS = env.AWS_ACCOUNT_ALIAS
+	        	SC_ENVIRONMENT = "dev"
+            } else {
+            	env.SC_AWS_ACCOUNT_ALIAS = "enl-${env.ENVIRONMENT}-site-connect"
+            	SC_ENVIRONMENT = env.ENVIRONMENT
+            }
+
+            build_job_name = "DSP_Site_Connectivity/${SC_ENVIRONMENT}/register-client-certificate"
+          }
+          echo "========Run Register-Client-Certificate Job========"
+          build job: "${build_job_name}", parameters: [
+	          string(name: 'GIT_REPO', value: "enlightedinc/sw_dsp_site_connectivity"),
+	          string(name: 'BUILD_GIT_BRANCH', value: "${env.SC_GIT_BRANCH}"),
+	          string(name: 'SC_BUILD_NUMBER', value: "${params.SC_BUILD_NUMBER}"),
+	          string(name: 'ENVIRONMENT', value: "${env.ENVIRONMENT}"),
+	          string(name: 'DR', value: "${params.DR}"),
+	          string(name: 'REGION', value: "${env.REGION}"),
+	          string(name: 'AWS_ACCOUNT_ALIAS', value: "${env.SC_AWS_ACCOUNT_ALIAS}"),
+	          string(name: 'CLIENT_ID', value: "${env.CLIENT_ID}"),
+	          string(name: 'CLIENT_NAME', value: "${params.TENANT_INSTANCE_NAME}"),
+	          string(name: 'PCA_ARN', value: "${env.PCA_ARN}"),
+	          string(name: 'CERT_ARN', value: "${env.CERT_ARN}")
+          ]
+      }
+    }
+
+  }//stages
+
+  post {
+    always {
+      script {
+        try{
+          echo "Calling sendSlackNotification()..."
+          code.sendSlackNotification()
+        } catch(err) {
+          echo "sendSlackNotification() : Error $err"
+        }
+      }
+    }
+  }
+
+}

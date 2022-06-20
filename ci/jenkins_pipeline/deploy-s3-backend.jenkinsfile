@@ -1,0 +1,103 @@
+pipeline{
+  agent {
+    kubernetes {
+      slaveConnectTimeout 180
+      yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: cicd
+spec:
+  containers:
+    - name: jnlp
+      image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/jenkins-jnlp:latest
+    - name: manage-jdk8-npm
+      image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/docker-jdk8:latest
+      imagePullPolicy: Always
+      command:
+        - cat
+      resources:
+        requests:
+          cpu: "1"
+      tty: true
+  securityContext:
+    fsGroup: 1000
+  serviceAccount: "jenkins-sa"
+'''
+    }
+  }
+  options {
+    timeout(time: 45, unit: 'MINUTES')   // timeout on whole pipeline job
+  }
+
+  parameters {
+    string(name: 'GIT_REPO', defaultValue: 'enlightedinc/gems', description: 'Git Repo')
+    string(name: 'BUILD_GIT_BRANCH', defaultValue: 'develop', description: 'Git Branch and Preprod/Prod should be master branch only')
+    string(name: 'ENVIRONMENT', defaultValue: '', description: 'Environment   like dev, pg (for playground)')
+    string(name: 'REGION', defaultValue: '', description: 'AWS Region')
+    string(name: 'MANAGE_BUILD_NUMBER', defaultValue: '', description: 'Build number that is tagged')
+    string(name: 'TENANT_INSTANCE_NAME', defaultValue: '', description: 'Tenant/Developer name to create s3 terraform bucket, ex: saleforce7')
+    choice(name: 'DR', choices: ['false', 'true'], description: 'Disaster Recovery')
+    string(name: 'AWS_ACCOUNT_ALIAS', defaultValue: '', description: 'AWS Account for Deployment')
+  }
+
+  stages{
+
+    stage('Parameter Check') {
+      agent none
+      steps {
+        echo "Checking Parameter"
+        script {
+          if ( params.BUILD_GIT_BRANCH == "") {
+            error "Parameter BUILD_GIT_BRANCH can not be empty"
+          }
+          if ( params.MANAGE_BUILD_NUMBER == "" ) {
+            error "Parameter TENANT_INSTANCE_NAME can not be empty"
+          }
+          if ( params.TENANT_INSTANCE_NAME == "" ) {
+            error "Parameter TENANT_INSTANCE_NAME can not be empty"
+          }
+
+          def master_branch_environments = ["preprod", "prod"]
+          if ( master_branch_environments.contains(params.ENVIRONMENT) && params.BUILD_GIT_BRANCH != "master") {
+            error "Prod and Preprod deployment should be from master branch only"
+          }
+        }
+      }
+    }
+
+    stage('LoadGroovyCode') {
+      steps {
+        echo "Loading groovy script"
+        script {
+          code = load "${WORKSPACE}/ci/jenkins_pipeline/stage-source.groovy"
+          code.setEnvVars("${params.MANAGE_BUILD_NUMBER}")
+        }
+      }
+    }
+
+    stage('Setup Tools'){
+      steps{
+        script {
+          code.setupTools()
+        }
+      }
+    }
+
+    stage('Get From Nexus'){
+      steps{
+        script {
+          code.getFromNexus()
+        }
+      }
+    }
+
+    stage('Deploy Manage Terraform Backend'){
+      steps {
+        script {
+          code.deployBootstrap()
+        }
+      }
+    }
+  }
+}

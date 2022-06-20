@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: cicd
+spec:
+  containers:
+    - name: jnlp
+      image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/jenkins-jnlp:latest
+    - name: graalvm
+      image: 354567316383.dkr.ecr.us-east-1.amazonaws.com/jenkins-graalvm
+      imagePullPolicy: Always
+      command:
+        - cat
+      resources:
+        requests:
+          cpu: "2"
+          memory: "8Gi"
+      tty: true
+  securityContext:
+    fsGroup: 1000
+  serviceAccount: "jenkins-sa"
