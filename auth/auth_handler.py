@@ -5,6 +5,8 @@ import jwt
 
 JWT_SECRET = settings.JWT_SECRET
 JWT_ALGORITHM = settings.JWT_ALGORITHM
+JWT_SECRET=1b2e61c965f5fff8e3e19fc66b515b70
+JWT_ALGORITHM=HS256
 
 
 def token_response(token: str):
